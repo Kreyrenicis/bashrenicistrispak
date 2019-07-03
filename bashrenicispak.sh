@@ -14,37 +14,20 @@ warn() { echo "$*" 1>&2 ; }
 
 [[ $UID != "0" ]] && die "FATAL: This script has to be executed with root permission (using sudo for example)."
 
-case $(hostname) in
-  "endless")
-      TargetDirectory="/var/mnt/gentoo/"
-      my_user="fesus"
-      ;;
-  "dreamon")
-      TargetDirectory="/mnt/GFEX/" # GentooFesusEXperiment
-      my_user="kreyren"
-      ;;
-    *)
-      printf "INPUT: Select your target directory:\nHINT: We will install gentoo in this directory, /mnt directory is recommended assuming gentoo system running in chroot environment."
-      read TargetDirectory
-      my_user="notkreyren"
-esac
-
-td="${TargetDirectory}"
-
 ## Sanitization
 ### Required to check on some linux-based distros that doesn't have GNU tools.
 ### TODO: Export using script if not present.
 sanity_checks() {
-  [ ! -x $(command -v mount) ] && die "FATAL: Command 'mount' not executable"
-  [ ! -x $(command -v chroot) ] && die "FATAL: Command 'chroot' not executable"
-  [ ! -x $(command -v wget) ] && die "FATAL: Command 'wget' not executable"
-  [ ! -x $(command -v mv) ] && die "FATAL: Command 'mv' not executable"
-  [ ! -x $(command -v grep) ] && die "FATAL: Command 'grep' not executable"
-  [ ! -x $(command -v sed) ] && die "FATAL: Command 'sed' not executable"
-  [ -z ${td} ] && die "FATAL:"
+  [ ! -x "$(command -v mount)" ] && die "FATAL: Command 'mount' not executable"
+  [ ! -x "$(command -v chroot)" ] && die "FATAL: Command 'chroot' not executable"
+  [ ! -x "$(command -v wget)" ] && die "FATAL: Command 'wget' not executable"
+  [ ! -x "$(command -v mv)" ] && die "FATAL: Command 'mv' not executable"
+  [ ! -x "$(command -v grep)" ] && die "FATAL: Command 'grep' not executable"
+  [ ! -x "$(command -v sed)" ] && die "FATAL: Command 'sed' not executable"
+  [ -z "${td}" ] && die "FATAL: Variable td ($td) can not be blank!"
 }; sanity_checks
 
-install_gentoo() {
+export_gentoo() { # Export gentoo tarbar in $td
   ## Make Directory
   if [[ ! -d ${td} ]]; then
     mkdir -p ${td} || die "FATAL: Unable to make new directory in ${td}."
@@ -79,7 +62,10 @@ install_gentoo() {
   elif [[ -e ${td}/etc/portage ]]; then
     printf "INFO: Gentoo is already extracted.\n"
   fi
+}
 
+prepare_for_chroot() { # Performs required steps to chroot
+  ## Chrooting
   ## Make mount points
   if [[ $(mount | grep -o "${td}" -m 1) != "${td}" ]]; then
      mount --rbind /dev ${td}/dev || die "FATAL: Unable to mount /dev as --rbind"
@@ -94,29 +80,6 @@ install_gentoo() {
     printf "INFO: Mount points are mounted\n"
   fi
 
-  ## Configure ${td}/etc/resolv.conf
-  if [[ $(sed -n 1p ${td}/etc/resolv.conf) != "nameserver 1.1.1.1"  ]]; then
-    printf "nameserver 1.1.1.1\nnameserver1.0.0.1\nnameserver 2606:4700:4700::1111\nnameserver 2606:4700:4700::1001" > ${td}/etc/resolv.conf || die "FATAL: Unable to make ${td}/etc/resolv.conf configuration"
-  elif [[ $(sed -n 1p /etc/resolv.conf) != "nameserver 1.1.1.1"  ]]; then
-    printf "INFO: ${td}etc/resolv.conf is configured\n"
-  fi
-
-  ## Chrooting
-  ### Adapting Argent Linux binhost
-  if [[ $(cat ${td}/etc/portage/make.conf | grep -o "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"") != "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" ]]; then
-    printf "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" >> ${td}/etc/portage/make.conf
-  elif [[ $(cat ${td}/etc/portage/make.conf | grep -o "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"") == "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" ]]; then
-    printf "INFO: Argent linux binhost is configured, thanks Nox! <3"
-  fi
-  ### Sync gentoo repository
-  #### TODO: Sanitize
-  printf "INFO: Syncing gentoo repository." && chroot ${td} emerge --sync --quiet || die "FATAL: Unable to sync gentoo repository"
-  ### Creating user account
-  if [[ $(chroot ${td} cat /etc/group | grep -o "${my_user}" -m 1) != "${my_user}" ]]; then
-    chroot ${td} useradd -m -G users,wheel,audio -s /bin/bash ${my_user} || die "FATAL: Unable to make new user on chroot"
-  elif [[ $(chroot ${td} cat /etc/group | grep -o "${my_user}" -m 1) == "${my_user}" ]]; then
-    printf "INFO: Account ${my_user} is present in chroot\n"
-  fi
   ### Configure Xorg
   xauth extract ${td}/home/${my_user}/.Xauthority $(hostname)/unix:0 && printf "FIXME: .Xauthority has been exported." || die "FATAL+FIXME: Unable to export .Xauthority"
   #### Install Xorg if not present already
@@ -133,7 +96,85 @@ install_gentoo() {
   fi
 }
 
-prepare_for_gaming() {
+configure_gentoo() { # Performs requested configuration
+  configure_resolvconf() {
+    ## Configure ${td}/etc/resolv.conf
+    if [[ $(sed -n 1p ${td}/etc/resolv.conf) != "nameserver 1.1.1.1"  ]]; then
+      printf "nameserver 1.1.1.1\nnameserver1.0.0.1\nnameserver 2606:4700:4700::1111\nnameserver 2606:4700:4700::1001" > ${td}/etc/resolv.conf || die "FATAL: Unable to make ${td}/etc/resolv.conf configuration"
+    elif [[ $(sed -n 1p /etc/resolv.conf) != "nameserver 1.1.1.1"  ]]; then
+      printf "INFO: ${td}etc/resolv.conf is configured\n"
+    fi
+  }
+
+  get_argent_binhost() {
+    ### Adapting Argent Linux binhost
+    if [[ $(cat ${td}/etc/portage/make.conf | grep -o "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"") != "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" ]]; then
+      printf "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" >> ${td}/etc/portage/make.conf
+    elif [[ $(cat ${td}/etc/portage/make.conf | grep -o "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"") == "PORTAGE_BINHOST="http://pkgwork.argentlinux.io/argentwork/binhost/x64/"" ]]; then
+      printf "INFO: Argent linux binhost is configured, thanks Nox! <3"
+    fi
+  }
+
+  configure_user_acc() {
+    while [[ -z $my_user ]]; do
+      info "Variable my_user ($my_user) is blank, please enter it manually."
+      info "This variable should have value of username"
+      read $my_user # TODO: Make it more obvious
+    done
+
+    if [[ $(chroot ${td} cat /etc/group | grep -o "${my_user}" -m 1) != "${my_user}" ]]; then
+      chroot ${td} useradd -m -G users,wheel,audio -s /bin/bash ${my_user} || die "FATAL: Unable to make new user on chroot"
+    elif [[ $(chroot ${td} cat /etc/group | grep -o "${my_user}" -m 1) == "${my_user}" ]]; then
+      printf "INFO: Account ${my_user} is present in chroot\n"
+    fi
+  }
+
+  get_kernel() { # Get Kernel source and compile with available configuration
+    while [[ -z $1 ]]; do
+      warn "Kernel to fetch wasn't specified, please specify manually"
+      read $1
+    done
+
+    case $1 in
+      gentoo)
+        chroot $td emerge gentoo-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      git-sources)
+        chroot $td emerge git-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      ck-sources)
+        chroot $td emerge ck-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      misp-sources)
+        chroot $td emerge misp-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      pf-sources)
+        chroot $td emerge pf-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      rt-sources)
+        chroot $td emerge rt-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      xbox-sources)
+        chroot $td emerge xbox-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      zen-sources)
+        chroot $td emerge zen-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+      vanilla-sources)
+        chroot $td emerge vanilla-sources || die "Unable to fetch gentoo-sources" # Get source
+      ;;
+    esac
+
+    info "Compiling kernel with modules grabbed from currently loaded kernel." # Sanitization needed
+    chroot $td make --directory $td/usr/src/linux make localmodconfig || die "Unable to configure .config" # Get .config
+    chroot $td make --directory $td/usr/src/linux make clean || die "Unable to clean kernel source" # Sanity
+    chroot $td make --directory $td/usr/src/linux make || die "Unable to compile kernel source" # Compile kernel
+    chroot $td make --directory $td/usr/src/linux make modules_install || die "Unable to install modules" # Install modules
+    chroot $td make --directory $td/usr/src/linux make install || die "Unable to export kernel image in /boot" # Export kernel image in /boot
+  }
+}
+
+prepare_for_gaming() { # TODO: Obsolete -> include in configure gentoo
   ### Fetch bobwya repository
   ## Configure bobwya repository which is recommended for wine
   if [[ ! -e ${td}/etc/portage/repos.conf/bobwya.conf && "$(cat ${td}/etc/portage/repos.conf/bobwya.conf)" != "$(printf "[bobwya]\nlocation = /usr/bobwya-repo/\nsync-type = git\nsync-uri = git@github.com:bobwya/bobwya.git\nauto-sync = yes")" ]]; then
@@ -274,11 +315,45 @@ wipe_portage_configuration() { # wipe /etc/portage/package.{use,keywords}
   fi
 }
 
+update_me() { # Updates this script - NOT FINISHED
+  ## WARN: Has to be one line since rest of the file will be changed during this process
+  if [[ ! -e /tmp/BASHRENICISPAK ]]; then
+    mkdir /tmp/BASHRENICISPAK && printf "INFO: Creating new temporary directory in /tmp/BASHRENICISPAK that is going to be used for update.\n" || die "FATAL: Unable to create a new temporary directory in /tmp/BASHRENICISPAK.\n"
+  elif [[ -e /tmp/BASHRENICISPAK ]]; then
+    printf "INFO: Temporary directory in /tmp/BASHRENICISPAK exists\n"
+  fi
+
+printf "INFO: Fetching bashrenicispak..\n" && wget https://raw.githubusercontent.com/Kreyrenicis/bashrenicistrispak/master/bashrenicispak.sh -O /tmp/BASHRENICISPAK/bashrenicispak.sh && printf "INFO: bashrenicispak has been fetched\n" || die "FATAL: Unable to fetch bashrenicispak.\n"
+
+  if [[ -e /usr/bin && ! -e /ostree ]]; then
+    mv /tmp/BASHRENICISPAK/bashrenicispak.sh /usr/bin/bashrenicispak && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
+
+  elif [[ -e /ostree ]]; then
+    if [[ ! -e /var/usrlocal/bin ]]; then
+      mkdir /var/usrlocal/bin -p && printf "INFO: Created new directory in /var/usrlocal/bin\n" || die "FATAL: Unable to make new directory in /var/usrlocal/bin.\n"
+      mv /tmp/BASHRENICISPAK/bashrenicispak.sh /var/usrlocal/bin && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
+    elif [[ -e /var/usrlocal/bin ]]; then
+      printf "INFO: Directory /var/usrlocal/bin exists\n"
+              mv /tmp/BASHRENICISPAK/bashrenicispak.sh /var/usrlocal/bin && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
+    fi
+  fi
+}
+
 case $1 in
-  --get-gentoo)
-    install_gentoo && chroot ${td} /bin/bash
+  --get-gentoo) # Install bare minimum gentoo on a system
+    while [[ -z $td ]]; do
+      info "Variable td ($td) can not be blank, please specify directory to which we will intall gentoo (e.g: /mnt/gentoo)"
+      warn "This directory should be mounted on block device"
+      read $td
+    done
+    export_gentoo
+    configure_gentoo
+      configure_resolvconf
+      configure_user_acc
+      get_kernel
     ;;
   --leagueoflegends|--lol)
+    sanity_checks
     install_gentoo
     configure_portage_for_lol_and_cabal
     prepare_for_gaming
@@ -290,33 +365,8 @@ case $1 in
     prepare_for_gaming
     fetch_cabal
     ;;
-  --fesus|--noob) # Special usecase
-    wipe_portage_configuration
-    configure_portage_for_lol_and_cabal
-    prepare_for_gaming
-    ;;
   --update)
-    ## WARN: Has to be one line since rest of the file will be changed during this process
-    if [[ ! -e /tmp/BASHRENICISPAK ]]; then
-      mkdir /tmp/BASHRENICISPAK && printf "INFO: Creating new temporary directory in /tmp/BASHRENICISPAK that is going to be used for update.\n" || die "FATAL: Unable to create a new temporary directory in /tmp/BASHRENICISPAK.\n"
-    elif [[ -e /tmp/BASHRENICISPAK ]]; then
-      printf "INFO: Temporary directory in /tmp/BASHRENICISPAK exists\n"
-    fi
-
-  printf "INFO: Fetching bashrenicispak..\n" && wget https://raw.githubusercontent.com/Kreyrenicis/bashrenicistrispak/master/bashrenicispak.sh -O /tmp/BASHRENICISPAK/bashrenicispak.sh && printf "INFO: bashrenicispak has been fetched\n" || die "FATAL: Unable to fetch bashrenicispak.\n"
-
-    if [[ -e /usr/bin && ! -e /ostree ]]; then
-      mv /tmp/BASHRENICISPAK/bashrenicispak.sh /usr/bin/bashrenicispak && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
-
-    elif [[ -e /ostree ]]; then
-      if [[ ! -e /var/usrlocal/bin ]]; then
-        mkdir /var/usrlocal/bin -p && printf "INFO: Created new directory in /var/usrlocal/bin\n" || die "FATAL: Unable to make new directory in /var/usrlocal/bin.\n"
-        mv /tmp/BASHRENICISPAK/bashrenicispak.sh /var/usrlocal/bin && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
-      elif [[ -e /var/usrlocal/bin ]]; then
-        printf "INFO: Directory /var/usrlocal/bin exists\n"
-                mv /tmp/BASHRENICISPAK/bashrenicispak.sh /var/usrlocal/bin && printf "SUCCESS: BASHRENICISPAK has been suceessfully updated!\n" || die "FATAL: Unable to update bashrenicispak from temporary directory.\n"
-      fi
-    fi
+    update_me
     ;;
   --help|*)
     printf "BASHRENICISPAK!\n\nUSAGE:\n--leagueoflegends    To install League Of Legends\n--cabal    To install CABAL Online.\n\nCreated by github.com/kreyren under GNUv2\n"
