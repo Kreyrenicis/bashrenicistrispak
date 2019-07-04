@@ -14,6 +14,11 @@ warn() { echo "$*" 1>&2 ; }
 
 [[ $UID != "0" ]] && die "FATAL: This script has to be executed with root permission (using sudo for example)."
 
+case $(uname -m) in
+  x86_64) arch="amd64" ;;
+  *) die "Unsupported arch detected ($(uname -m))"
+esac
+
 ## Sanitization
 ### Required to check on some linux-based distros that doesn't have GNU tools.
 ### TODO: Export using script if not present.
@@ -51,7 +56,7 @@ export_gentoo() { # Export gentoo tarbar in $td
     gentoo_file_name="$(cat ${td}/gentoo_info | grep -o "stage3-amd64-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.tar.xz")"
       qfn="${gentoo_file_name}" # Doesn't work for some reason..
 
-    ## Actuall fetch
+    ## Actual fetch
     if [[ ! -e "${td}/${gentoo_file_name}" ]]; then
       wget ${gt} -P ${td} || die "FATAL: unable to fetch tarbar"
     elif [[ -e ${td}/${gentoo_file_name} ]]; then
@@ -94,6 +99,9 @@ prepare_for_chroot() { # Performs required steps to chroot
   elif [[ -e ${td}/home/${my_user}/Downloads ]]; then
     printf "INFO: Directory ${td}/home/${my_user}/Downloads is present\n"
   fi
+
+  # Source /etc/profile for gentoo
+  chroot $td source /etc/profile || warn "Unable to source /etc/profile on gentoo"
 }
 
 configure_gentoo() { # Performs requested configuration
@@ -116,6 +124,7 @@ configure_gentoo() { # Performs requested configuration
   }
 
   configure_user_acc() {
+    my_user="$1"
     while [[ -z $my_user ]]; do
       info "Variable my_user ($my_user) is blank, please enter it manually."
       info "This variable should have value of username"
@@ -130,6 +139,7 @@ configure_gentoo() { # Performs requested configuration
   }
 
   get_kernel() { # Get Kernel source and compile with available configuration
+    [ -e "$td/usr/src/linux" ] && warn "/usr/src/linux already exists on this chroot environment" && return
     while [[ -z $1 ]]; do
       warn "Kernel to fetch wasn't specified, please specify manually"
       read $1
@@ -162,7 +172,6 @@ configure_gentoo() { # Performs requested configuration
       ;;
       vanilla-sources)
         chroot $td emerge vanilla-sources || die "Unable to fetch gentoo-sources" # Get source
-      ;;
     esac
 
     info "Compiling kernel with modules grabbed from currently loaded kernel." # Sanitization needed
@@ -171,6 +180,24 @@ configure_gentoo() { # Performs requested configuration
     chroot $td make --directory $td/usr/src/linux make || die "Unable to compile kernel source" # Compile kernel
     chroot $td make --directory $td/usr/src/linux make modules_install || die "Unable to install modules" # Install modules
     chroot $td make --directory $td/usr/src/linux make install || die "Unable to export kernel image in /boot" # Export kernel image in /boot
+  }
+
+  get_gentoo_profile() { # Set profile on $td
+    [ ! -e "$td/etc/portage" ] && die "This is not gentoo system (since $td/etc/portage is missing)-> Unable to set profile"
+    [ ! -x $(chroot $td command -v eselect) ] && die "Command 'eselect' is not executable in $td"
+    while [[ -z $1 ]]; do
+      info "Profile was not specified, please specify manually:"
+      read $1
+    done
+    chroot $td eselect profile set $1 || die "Unable to set profile, syntax error?"
+  }
+
+  get_desktop_environment() { # Configure desktop environment
+    case $1 in
+      gnome)
+
+      ;;
+    esac
   }
 }
 
@@ -348,9 +375,10 @@ case $1 in
     done
     export_gentoo
     configure_gentoo
+      get_gentoo_profile default/linux/amd64/17.0/desktop
       configure_resolvconf
-      configure_user_acc
-      get_kernel
+      configure_user_acc tesk
+      get_kernel gentoo-sources
     ;;
   --leagueoflegends|--lol)
     sanity_checks
@@ -364,6 +392,65 @@ case $1 in
     configure_portage_for_lol_and_cabal
     prepare_for_gaming
     fetch_cabal
+    ;;
+  --tesk)
+  while [[ -z $td ]]; do
+    info "Variable td ($td) can not be blank, please specify directory to which we will intall gentoo (e.g: /mnt/gentoo)"
+    warn "This directory should be mounted on block device"
+    read $td
+  done
+  export_gentoo
+  prepare_for_chroot
+  configure_gentoo
+    printf '%s\n' \ # Configure /etc/portage/make.conf
+      '# These settings were set by the catalyst build script that automatically' \
+      '# built this stage.' \
+      '# Please consult /usr/share/portage/config/make.conf.example for a more' \
+      '# detailed example.' \
+      'COMMON_FLAGS="-O2 -pipe -march=znver1"'\
+      'CFLAGS="${COMMON_FLAGS}"' \
+      'CXXFLAGS="${COMMON_FLAGS}"' \
+      'FCFLAGS="${COMMON_FLAGS}"' \
+      'FFLAGS="${COMMON_FLAGS}"' \
+      'MAKEOPTS="-j6"' \
+      '' \
+      'USE="-qt5 -kde X gtk gnome -multilib -bluetooth"' \
+      '' \
+      'CPU_FLAGS_X86="aes avx avx2 f16c fma3 mmx mmxext pclmul popcnt sse sse2 sse3 sse4_1 sse4_2 sse4a ssse3"' \
+      'VIDEO_CARDS="amdgpu radeonsi"' \
+      'EMERGE_DEFAULT_OPTS="--jobs"' \
+      'ABI_X86="64"' \
+      '' \
+      'GENTOO_MIRRORS="rsync://mirrors.tera-byte.com/gentoo rsync://gentoo.gossamerhost.com/gentoo-distfiles/"' \
+      '# NOTE: This stage was built with the bindist Use flag enabled' \
+      'PORTDIR="/usr/portage"' \
+      'DISTDIR="/usr/portage/distfiles"' \
+      'PKGDIR="/usr/portage/packages"' \
+      '' \
+      '# This sets the language of build output to English.' \
+      '# Please keep this setting intact when reporting bugs.' \
+      'LC_MESSAGES=C' \
+    > "$td/etc/portage/make.conf" || die "Unable to configure /etc/portage/make.conf"
+    printf '%s\n' \ # Configure /etc/portage/package.use for multilib toolchain
+      '## TOOLCHAIN' \
+      'sys-devel/gcc multilib openmp' \
+      '## openmp added based on https://bugs.gentoo.org/680802' \
+      'sys-libs/glibc multiarch multilib suid' \
+      'sys-devel/binutils multitarget gold plugins' \
+      '## gold+plugins - required for cxx' \
+    > $td/etc/portage/package.use
+    configure_resolvconf
+    chroot $td emerge --sync || die "Unable to sync" # Sync repos
+    get_gentoo_profile default/linux/amd64/17.0/desktop/gnome
+    configure_user_acc themainzero
+    printf '%s\n' \ # Configure $HOME/.bashrc of user
+      'ix() { curl -n -F 'f:1=<-' http://ix.io ; }' \
+      '[ -x $(command -v emerge) ] && alias em="emerge"' \
+    > /home/themainzero/.bashrc
+    [ ! -x $(chroot $td command -v sudo) ] && (chroot $td emerge sudo || warn "Unable to get sudo")
+    [ ! -x $(chroot $td command -v gnome-session) ] && (chroot $td emerge gnome || die "Unable to emerge gnome")
+    [ ! -x $(chroot $td command -v curl) ] && (chroot $td emerge curl || warn "Unable to emerge curl")
+    get_kernel gentoo-sources
     ;;
   --update)
     update_me
