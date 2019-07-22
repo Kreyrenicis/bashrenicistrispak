@@ -68,7 +68,7 @@ install_gentoo() {
     gentoo_file_name="$(cat ${td}/gentoo_info | grep -o "stage3-amd64-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.tar.xz")"
       qfn="${gentoo_file_name}" # Doesn't work for some reason..
 
-    ## Actuall fetch
+    ## Actual fetch
     if [[ ! -e "${td}/${gentoo_file_name}" ]]; then
       wget ${gt} -P ${td} || die "FATAL: unable to fetch tarbar"
     elif [[ -e ${td}/${gentoo_file_name} ]]; then
